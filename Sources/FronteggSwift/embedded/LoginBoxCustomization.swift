@@ -19,11 +19,24 @@ import Foundation
 ///
 /// This keeps customization on Frontegg's own documented configuration shape,
 /// so it survives login-box upgrades.
+///
+/// `signUpUrl` is the one exception, and deliberately so. The box's own
+/// `signUpUrl` is an internal route matched against `location.pathname`, and
+/// the box is served from the Frontegg auth origin — so no value in the
+/// configuration shape can send the user to a host application's own sign-up
+/// page. That link is therefore redirected in the DOM instead, keyed on the
+/// box's `data-test-id`. A test id is part of the box's test contract rather
+/// than its generated styling, which is what makes this narrow exception
+/// tolerable where CSS/class-name styling would not be.
 enum LoginBoxCustomization {
 
-    /// Returns `nil` when there is nothing to override, so callers can skip
+    /// Returns `nil` when there is nothing to apply, so callers can skip
     /// injecting a script entirely.
-    static func script(themeOptions: [String: Any]?, localizations: [String: Any]?) -> String? {
+    static func script(
+        themeOptions: [String: Any]?,
+        localizations: [String: Any]?,
+        signUpUrl: String? = nil
+    ) -> String? {
         var overrides: [String: Any] = [:]
 
         if let themeOptions, !themeOptions.isEmpty {
@@ -33,10 +46,61 @@ enum LoginBoxCustomization {
             overrides["localizations"] = localizations
         }
 
-        guard !overrides.isEmpty, let json = encodeOverrides(overrides) else {
+        let redirectUrl = sanitizedSignUpUrl(signUpUrl)
+
+        // Either concern alone is worth injecting for, so this is not gated on
+        // `overrides` being non-empty.
+        guard !overrides.isEmpty || redirectUrl != nil else {
             return nil
         }
-        return template.replacingOccurrences(of: "__FRONTEGG_OVERRIDES__", with: json)
+
+        let overridesJson = overrides.isEmpty ? "{}" : encodeOverrides(overrides)
+        guard let overridesJson else { return nil }
+
+        return template
+            .replacingOccurrences(of: "__FRONTEGG_OVERRIDES__", with: overridesJson)
+            .replacingOccurrences(
+                of: "__FRONTEGG_SIGN_UP_URL__",
+                with: redirectUrl.flatMap(encodeJsonString) ?? "null"
+            )
+    }
+
+    /// Accepts only absolute `http(s)` URLs.
+    ///
+    /// The value reaches `location.assign`, so anything else — `javascript:`
+    /// above all — is dropped rather than injected. A host app is trusted, but
+    /// this value can originate in remote configuration on its side, and the
+    /// cost of the check is nothing.
+    static func sanitizedSignUpUrl(_ signUpUrl: String?) -> String? {
+        guard let signUpUrl, !signUpUrl.isEmpty,
+              let components = URLComponents(string: signUpUrl),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty else {
+            return nil
+        }
+        return signUpUrl
+    }
+
+    /// JSON-encodes a single string, including its surrounding quotes.
+    static func encodeJsonString(_ value: String) -> String? {
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: [value],
+            options: []
+        ),
+              let array = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        // `["…"]` → `"…"`, so the caller can drop it straight into a source
+        // string without re-deriving JavaScript string escaping by hand.
+        return String(array.dropFirst().dropLast())
+            // JSONSerialization writes `/` as `\/`. Harmless — a JS string
+            // literal reads `\/` as `/` — but it makes the emitted URL hard to
+            // read in a script dump, and `/` needs no escaping in either JSON
+            // or JavaScript.
+            .replacingOccurrences(of: "\\/", with: "/")
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
     /// JSON-encodes the overrides for embedding in a JavaScript source string.
@@ -65,7 +129,52 @@ enum LoginBoxCustomization {
       window.__fronteggLoginBoxOverridesInstalled = true;
 
       var overrides = __FRONTEGG_OVERRIDES__;
+      var SIGN_UP_URL = __FRONTEGG_SIGN_UP_URL__;
       var METADATA_PATH = '/frontegg/metadata?entityName=adminBox';
+      var SIGN_UP_SELECTOR = '[data-test-id="redirect-to-signup"]';
+
+      // The box renders its sign-up link as
+      // `<… data-test-id="redirect-to-signup" onClick=goToSignup>`, inside a
+      // `[data-test-id="sign-up-message"]` container. Both ids are part of the
+      // box's test contract, unlike its generated class names.
+      //
+      // The listener sits on `document` in the capture phase because the box
+      // lives in an open shadow root: `click` and `keydown` are composed, so
+      // they propagate across the boundary, and `composedPath()` still exposes
+      // the real target. Capture also means we run before the box's own
+      // handler, which is what lets us stop its internal navigation.
+      function isSignUpTrigger(event) {
+        if (!SIGN_UP_URL) { return false; }
+        var path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+        for (var i = 0; i < path.length; i++) {
+          var node = path[i];
+          if (!node || node.nodeType !== 1) { continue; }
+          if (typeof node.matches === 'function' && node.matches(SIGN_UP_SELECTOR)) { return true; }
+          if (typeof node.closest === 'function' && node.closest(SIGN_UP_SELECTOR)) { return true; }
+        }
+        return false;
+      }
+
+      function redirectToSignUp(event) {
+        if (!isSignUpTrigger(event)) { return; }
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+          event.stopImmediatePropagation();
+        }
+        window.location.assign(SIGN_UP_URL);
+      }
+
+      if (SIGN_UP_URL) {
+        document.addEventListener('click', redirectToSignUp, true);
+        // The link is a focusable non-button with its own onKeyDown, so keyboard
+        // and switch-control users reach it this way rather than by click.
+        document.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+            redirectToSignUp(event);
+          }
+        }, true);
+      }
 
       function isPlainObject(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);

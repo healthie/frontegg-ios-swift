@@ -132,4 +132,120 @@ final class LoginBoxCustomizationTests: XCTestCase {
         // because the payload is embedded as an object literal, not a string.
         XCTAssertTrue(script.contains("Don't \\\"stop\\\" now"))
     }
+
+    // MARK: - Sign-up redirect
+
+    func testSignUpUrlAloneIsEnoughToInjectAScript() throws {
+        // The redirect stands on its own: an app can own its sign-up flow
+        // without overriding any theme or copy.
+        let script = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil,
+            localizations: nil,
+            signUpUrl: "https://app.example.com/sign_up/select"
+        ))
+
+        XCTAssertTrue(script.contains("https://app.example.com/sign_up/select"))
+        XCTAssertTrue(script.contains("[data-test-id=\"redirect-to-signup\"]"))
+    }
+
+    func testSignUpUrlIsNullWhenAbsent() throws {
+        let script = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil,
+            localizations: ["en": ["loginBox": ["login": ["title": "Sign-in"]]]]
+        ))
+
+        XCTAssertTrue(script.contains("var SIGN_UP_URL = null;"))
+    }
+
+    func testSignUpUrlIsJsonEncoded() throws {
+        // A quote in the value would otherwise terminate the JS string literal.
+        let script = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil,
+            localizations: nil,
+            signUpUrl: "https://app.example.com/sign_up?q=%22x%22&a=1"
+        ))
+
+        XCTAssertTrue(script.contains("var SIGN_UP_URL = \"https://app.example.com/sign_up?q=%22x%22&a=1\";"))
+    }
+
+    // MARK: - Sign-up URL validation
+
+    func testNonHttpSchemesAreRejected() {
+        // The value reaches location.assign, so a script URL must never survive.
+        for url in [
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///etc/passwd",
+            "myapp://sign_up"
+        ] {
+            XCTAssertNil(
+                LoginBoxCustomization.sanitizedSignUpUrl(url),
+                "expected \(url) to be rejected"
+            )
+        }
+    }
+
+    func testRelativeAndEmptyUrlsAreRejected() {
+        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("/users/sign_up/select"))
+        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl(""))
+        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl(nil))
+        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("https://"))
+    }
+
+    func testHttpAndHttpsAreAccepted() {
+        XCTAssertEqual(
+            LoginBoxCustomization.sanitizedSignUpUrl("https://app.example.com/x"),
+            "https://app.example.com/x"
+        )
+        // http is allowed for local development against a plain-HTTP host.
+        XCTAssertEqual(
+            LoginBoxCustomization.sanitizedSignUpUrl("http://localhost:3000/x"),
+            "http://localhost:3000/x"
+        )
+        XCTAssertEqual(
+            LoginBoxCustomization.sanitizedSignUpUrl("HTTPS://app.example.com/x"),
+            "HTTPS://app.example.com/x"
+        )
+    }
+
+    func testRejectedUrlDoesNotProduceASignUpOnlyScript() {
+        // Nothing else to apply and an unusable URL: no script at all, rather
+        // than one that installs listeners which can never fire.
+        XCTAssertNil(LoginBoxCustomization.script(
+            themeOptions: nil,
+            localizations: nil,
+            signUpUrl: "javascript:alert(1)"
+        ))
+    }
+
+    /// The listener code ships in every script and is gated at runtime on
+    /// `SIGN_UP_URL`, so a copy-only injection carries it but never binds it.
+    func testListenersAreRuntimeGatedOnTheRedirect() throws {
+        let withoutRedirect = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil,
+            localizations: ["en": ["loginBox": ["login": ["title": "Sign-in"]]]]
+        ))
+        XCTAssertTrue(withoutRedirect.contains("var SIGN_UP_URL = null;"))
+        XCTAssertTrue(withoutRedirect.contains("if (SIGN_UP_URL) {"))
+
+        let withRedirect = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil,
+            localizations: nil,
+            signUpUrl: "https://app.example.com/sign_up"
+        ))
+        XCTAssertTrue(withRedirect.contains("addEventListener('click'"))
+        XCTAssertTrue(withRedirect.contains("addEventListener('keydown'"))
+    }
+
+    func testOverridesAndRedirectCoexist() throws {
+        let script = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: ["loginBox": ["palette": ["primary": ["main": "#3F6655"]]]],
+            localizations: ["en": ["loginBox": ["login": ["signUpLink": "Sign up now"]]]],
+            signUpUrl: "https://app.example.com/sign_up"
+        ))
+
+        XCTAssertTrue(script.contains("#3F6655"))
+        XCTAssertTrue(script.contains("Sign up now"))
+        XCTAssertTrue(script.contains("https://app.example.com/sign_up"))
+    }
 }

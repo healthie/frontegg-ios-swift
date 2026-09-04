@@ -79,13 +79,22 @@ public struct FronteggWebView: UIViewRepresentable {
         // untouched `fetch`. No-op unless the app set one of the properties.
         if let customizationScript = LoginBoxCustomization.script(
             themeOptions: fronteggApp.loginBoxThemeOptions,
-            localizations: fronteggApp.loginBoxLocalizations
+            localizations: fronteggApp.loginBoxLocalizations,
+            signUpUrl: fronteggApp.loginBoxSignUpUrl
         ) {
             logger.debug("Injecting login box customization overrides")
             userContentController.addUserScript(
                 WKUserScript(source: customizationScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
             )
-        } else if fronteggApp.loginBoxThemeOptions != nil || fronteggApp.loginBoxLocalizations != nil {
+            if fronteggApp.loginBoxSignUpUrl != nil,
+               LoginBoxCustomization.sanitizedSignUpUrl(fronteggApp.loginBoxSignUpUrl) == nil {
+                // Dropped by the scheme check, so the link would silently fall
+                // through to the box's own sign-up route.
+                logger.error("loginBoxSignUpUrl was set but is not an absolute http(s) URL; the login box will use its own sign-up route")
+            }
+        } else if fronteggApp.loginBoxThemeOptions != nil
+                    || fronteggApp.loginBoxLocalizations != nil
+                    || fronteggApp.loginBoxSignUpUrl != nil {
             // Set but unusable — almost always a value JSONSerialization cannot encode
             // (UIColor, Date, ...). Without this the box silently renders unbranded.
             logger.error("Login box overrides were set but could not be encoded; check that all values are JSON types (String, NSNumber, Array, Dictionary, NSNull)")

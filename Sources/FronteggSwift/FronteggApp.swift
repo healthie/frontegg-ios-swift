@@ -179,6 +179,23 @@ public class FronteggApp {
     /// ``loginBoxThemeOptions``. Embedded mode only.
     public var loginBoxLocalizations: [String: Any]? = nil
 
+    /// Absolute `http(s)` URL the login box's sign-up link should open instead
+    /// of the box's own sign-up route.
+    ///
+    /// For host apps that own their sign-up flow — where signing up means
+    /// choosing an account type, carrying an invite code, or anything else the
+    /// box's form does not model. The box's built-in `signUpUrl` cannot express
+    /// this: it is an internal route matched against `location.pathname`, and
+    /// the box is served from the Frontegg auth origin.
+    ///
+    /// Set this before calling `login()`. Pair it with
+    /// ``loginBoxLocalizations`` (`loginBox.login.signUpLink` /
+    /// `signUpMessage`), which is what makes the link render at all — and note
+    /// the box only shows it when the environment's public policy has
+    /// `allowSignups` enabled. Non-`http(s)` values are ignored.
+    /// Embedded mode only.
+    public var loginBoxSignUpUrl: String? = nil
+
 
     public var regionData: [RegionConfig] = []
     let credentialManager: CredentialManager
