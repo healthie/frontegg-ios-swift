@@ -185,6 +185,32 @@ final class LoginBoxCustomizationTests: XCTestCase {
         }
     }
 
+    /// A host that presents its own sign-up flow outside this WebView points
+    /// `loginBoxSignUpUrl` at its own scheme; the delegate's custom-scheme
+    /// branch then opens it and dismisses the box.
+    func testAppRegisteredSchemesAreAccepted() {
+        // The test bundle registers none, so this asserts the mechanism rather
+        // than a specific scheme: whatever the bundle declares is accepted, and
+        // anything else is not.
+        let schemes = LoginBoxCustomization.appUrlSchemes()
+
+        if let scheme = schemes.first {
+            XCTAssertEqual(
+                LoginBoxCustomization.sanitizedSignUpUrl("\(scheme)://sign-up"),
+                "\(scheme)://sign-up"
+            )
+        }
+        XCTAssertFalse(schemes.contains("definitelynotregistered"))
+        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("definitelynotregistered://sign-up"))
+    }
+
+    func testAppSchemeUrlNeedsNoHost() {
+        // `myapp://sign-up` parses with host "sign-up", but `myapp:sign-up`
+        // has none — neither should be rejected for that reason, only for not
+        // being a registered scheme.
+        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("unregistered:sign-up"))
+    }
+
     func testRelativeAndEmptyUrlsAreRejected() {
         XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("/users/sign_up/select"))
         XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl(""))

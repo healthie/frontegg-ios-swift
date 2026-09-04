@@ -65,21 +65,43 @@ enum LoginBoxCustomization {
             )
     }
 
-    /// Accepts only absolute `http(s)` URLs.
+    /// Accepts an absolute `http(s)` URL, or a URL on one of the host app's own
+    /// registered `CFBundleURLTypes` schemes.
     ///
     /// The value reaches `location.assign`, so anything else — `javascript:`
     /// above all — is dropped rather than injected. A host app is trusted, but
     /// this value can originate in remote configuration on its side, and the
     /// cost of the check is nothing.
+    ///
+    /// The app-scheme case is what makes a hand-off possible: a host that wants
+    /// its sign-up flow presented in its own browser/session rather than inside
+    /// this WebView points `loginBoxSignUpUrl` at its own scheme, and the
+    /// navigation delegate's existing custom-scheme branch opens it and
+    /// dismisses the login box.
     static func sanitizedSignUpUrl(_ signUpUrl: String?) -> String? {
         guard let signUpUrl, !signUpUrl.isEmpty,
               let components = URLComponents(string: signUpUrl),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = components.host, !host.isEmpty else {
+              let scheme = components.scheme?.lowercased() else {
             return nil
         }
-        return signUpUrl
+
+        if scheme == "http" || scheme == "https" {
+            guard let host = components.host, !host.isEmpty else { return nil }
+            return signUpUrl
+        }
+
+        return appUrlSchemes().contains(scheme) ? signUpUrl : nil
+    }
+
+    /// The host app's registered URL schemes, lowercased.
+    static func appUrlSchemes() -> [String] {
+        guard let urlTypes = Bundle.main.infoDictionary?["CFBundleURLTypes"] as? [[String: Any]] else {
+            return []
+        }
+        return urlTypes
+            .compactMap { $0["CFBundleURLSchemes"] as? [String] }
+            .flatMap { $0 }
+            .map { $0.lowercased() }
     }
 
     /// JSON-encodes a single string, including its surrounding quotes.
