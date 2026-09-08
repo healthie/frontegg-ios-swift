@@ -133,61 +133,160 @@ final class LoginBoxCustomizationTests: XCTestCase {
         XCTAssertTrue(script.contains("Don't \\\"stop\\\" now"))
     }
 
-    // MARK: - Sign-up redirect
+    // MARK: - Footer
 
-    func testSignUpUrlAloneIsEnoughToInjectAScript() throws {
-        // The redirect stands on its own: an app can own its sign-up flow
-        // without overriding any theme or copy.
+    /// A footer with one usable row, for tests that only care that it is valid.
+    private func footerPayload(
+        url: String = "https://policies.google.com/privacy",
+        hideBadge: Bool = true
+    ) -> [String: Any] {
+        [
+            "hideCaptchaBadge": hideBadge,
+            "rows": [
+                ["variant": "fine", "segments": [
+                    ["text": "Protected by reCAPTCHA — "],
+                    ["label": "Privacy Policy", "url": url]
+                ]]
+            ]
+        ]
+    }
+
+    func testFooterAloneIsEnoughToInjectAScript() throws {
+        // The footer stands on its own: an app can add an attribution without
+        // overriding any theme or copy.
         let script = try XCTUnwrap(LoginBoxCustomization.script(
             themeOptions: nil,
             localizations: nil,
-            signUpUrl: "https://app.example.com/sign_up/select"
+            footer: footerPayload()
         ))
 
-        XCTAssertTrue(script.contains("https://app.example.com/sign_up/select"))
-        XCTAssertTrue(script.contains("[data-test-id=\"redirect-to-signup\"]"))
+        XCTAssertTrue(script.contains("https://policies.google.com/privacy"))
+        XCTAssertTrue(script.contains("[data-test-id=\"root-element\"]"))
     }
 
-    func testSignUpUrlIsNullWhenAbsent() throws {
+    func testFooterIsNullWhenAbsent() throws {
         let script = try XCTUnwrap(LoginBoxCustomization.script(
             themeOptions: nil,
             localizations: ["en": ["loginBox": ["login": ["title": "Sign-in"]]]]
         ))
 
-        XCTAssertTrue(script.contains("var SIGN_UP_URL = null;"))
+        XCTAssertTrue(script.contains("var FOOTER = null;"))
     }
 
-    func testSignUpUrlIsJsonEncoded() throws {
-        // A quote in the value would otherwise terminate the JS string literal.
+    func testBadgeIsOnlyHiddenWhenAsked() throws {
+        let hiding = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil, localizations: nil,
+            footer: footerPayload(hideBadge: true)
+        ))
+        XCTAssertTrue(hiding.contains("\"hideCaptchaBadge\":true"))
+
+        let notHiding = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil, localizations: nil,
+            footer: footerPayload(hideBadge: false)
+        ))
+        XCTAssertTrue(notHiding.contains("\"hideCaptchaBadge\":false"))
+    }
+
+    /// Hiding Google's badge is only permissible alongside a visible
+    /// attribution, so the rule ships with the footer and nowhere else.
+    func testBadgeRuleShipsOnlyWithAFooter() throws {
+        let copyOnly = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil,
+            localizations: ["en": ["loginBox": ["login": ["title": "Sign-in"]]]]
+        ))
+        XCTAssertTrue(copyOnly.contains("var FOOTER = null;"))
+        // The helper is present but unreachable, because the script returns
+        // before it when FOOTER is null.
+        XCTAssertTrue(copyOnly.contains("if (!FOOTER) { return; }"))
+    }
+
+    /// Host copy must never be interpreted as markup.
+    func testFooterCopyIsRenderedAsTextNotHtml() throws {
+        let script = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil, localizations: nil, footer: footerPayload()
+        ))
+
+        XCTAssertTrue(script.contains("anchor.textContent = segment.label;"))
+        XCTAssertTrue(script.contains("createTextNode(segment.text)"))
+        // Asserted as an assignment rather than a bare substring, so the
+        // comment in the script explaining why we avoid it doesn't trip this.
+        XCTAssertFalse(script.contains(".innerHTML ="))
+        XCTAssertFalse(script.contains("insertAdjacentHTML"))
+    }
+
+    /// The footer follows the login screen only, matching the React SDK where
+    /// `boxFooter` is configured under `login`.
+    func testFooterIsScopedToTheLoginScreen() throws {
+        let script = try XCTUnwrap(LoginBoxCustomization.script(
+            themeOptions: nil, localizations: nil, footer: footerPayload()
+        ))
+
+        XCTAssertTrue(script.contains("[data-test-id=\"login-page-title\"]"))
+    }
+
+    func testQuotesInFooterCopyDoNotBreakTheScript() throws {
         let script = try XCTUnwrap(LoginBoxCustomization.script(
             themeOptions: nil,
             localizations: nil,
-            signUpUrl: "https://app.example.com/sign_up?q=%22x%22&a=1"
+            footer: [
+                "rows": [["variant": "body", "segments": [["text": "Don't \"stop\""]]]]
+            ]
         ))
 
-        XCTAssertTrue(script.contains("var SIGN_UP_URL = \"https://app.example.com/sign_up?q=%22x%22&a=1\";"))
+        XCTAssertTrue(script.contains("Don't \\\"stop\\\""))
     }
 
-    // MARK: - Sign-up URL validation
+    // MARK: - Footer validation
 
-    func testNonHttpSchemesAreRejected() {
-        // The value reaches location.assign, so a script URL must never survive.
+    /// A bad URL degrades the segment to plain text rather than dropping it: a
+    /// legal attribution missing a fragment reads as a bug, whereas an unlinked
+    /// label still says what it needs to say.
+    func testUnsafeSchemesDegradeToPlainText() throws {
         for url in [
             "javascript:alert(1)",
             "data:text/html,<script>alert(1)</script>",
             "file:///etc/passwd",
-            "myapp://sign_up"
+            "definitelynotregistered://sign-up"
         ] {
-            XCTAssertNil(
-                LoginBoxCustomization.sanitizedSignUpUrl(url),
-                "expected \(url) to be rejected"
+            let sanitized = try XCTUnwrap(
+                LoginBoxCustomization.sanitizedFooter(footerPayload(url: url)),
+                "expected \(url) to still produce a footer"
             )
+            let rows = try XCTUnwrap(sanitized["rows"] as? [[String: Any]])
+            let segments = try XCTUnwrap(rows[0]["segments"] as? [[String: Any]])
+
+            XCTAssertEqual(segments.count, 2, "expected \(url) to keep both segments")
+            XCTAssertEqual(segments[1]["text"] as? String, "Privacy Policy")
+            XCTAssertNil(segments[1]["url"], "expected \(url) to be stripped")
         }
     }
 
-    /// A host that presents its own sign-up flow outside this WebView points
-    /// `loginBoxSignUpUrl` at its own scheme; the delegate's custom-scheme
-    /// branch then opens it and dismisses the box.
+    func testHttpAndHttpsLinksAreAccepted() {
+        XCTAssertEqual(
+            LoginBoxCustomization.sanitizedLinkUrl("https://app.example.com/x"),
+            "https://app.example.com/x"
+        )
+        // http is allowed for local development against a plain-HTTP host.
+        XCTAssertEqual(
+            LoginBoxCustomization.sanitizedLinkUrl("http://localhost:3000/x"),
+            "http://localhost:3000/x"
+        )
+        XCTAssertEqual(
+            LoginBoxCustomization.sanitizedLinkUrl("HTTPS://app.example.com/x"),
+            "HTTPS://app.example.com/x"
+        )
+    }
+
+    func testRelativeAndEmptyLinksAreRejected() {
+        XCTAssertNil(LoginBoxCustomization.sanitizedLinkUrl("/users/sign_up/select"))
+        XCTAssertNil(LoginBoxCustomization.sanitizedLinkUrl(""))
+        XCTAssertNil(LoginBoxCustomization.sanitizedLinkUrl(nil))
+        XCTAssertNil(LoginBoxCustomization.sanitizedLinkUrl("https://"))
+    }
+
+    /// A host that presents its own sign-up flow outside this WebView points a
+    /// footer link at its own scheme; the delegate's custom-scheme branch then
+    /// opens it and dismisses the box.
     func testAppRegisteredSchemesAreAccepted() {
         // The test bundle registers none, so this asserts the mechanism rather
         // than a specific scheme: whatever the bundle declares is accepted, and
@@ -196,82 +295,79 @@ final class LoginBoxCustomizationTests: XCTestCase {
 
         if let scheme = schemes.first {
             XCTAssertEqual(
-                LoginBoxCustomization.sanitizedSignUpUrl("\(scheme)://sign-up"),
+                LoginBoxCustomization.sanitizedLinkUrl("\(scheme)://sign-up"),
                 "\(scheme)://sign-up"
             )
         }
         XCTAssertFalse(schemes.contains("definitelynotregistered"))
-        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("definitelynotregistered://sign-up"))
+        XCTAssertNil(LoginBoxCustomization.sanitizedLinkUrl("definitelynotregistered://sign-up"))
     }
 
-    func testAppSchemeUrlNeedsNoHost() {
-        // `myapp://sign-up` parses with host "sign-up", but `myapp:sign-up`
-        // has none — neither should be rejected for that reason, only for not
-        // being a registered scheme.
-        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("unregistered:sign-up"))
+    func testEmptyFooterProducesNothing() {
+        XCTAssertNil(LoginBoxCustomization.sanitizedFooter(nil))
+        XCTAssertNil(LoginBoxCustomization.sanitizedFooter([:]))
+        XCTAssertNil(LoginBoxCustomization.sanitizedFooter(["rows": []]))
+        // Rows with no usable segments are dropped, and a footer with no
+        // surviving rows is no footer at all.
+        XCTAssertNil(LoginBoxCustomization.sanitizedFooter([
+            "rows": [["variant": "body", "segments": [["label": ""], ["text": ""]]]]
+        ]))
     }
 
-    func testRelativeAndEmptyUrlsAreRejected() {
-        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("/users/sign_up/select"))
-        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl(""))
-        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl(nil))
-        XCTAssertNil(LoginBoxCustomization.sanitizedSignUpUrl("https://"))
+    func testUnknownVariantFallsBackToBody() throws {
+        let sanitized = try XCTUnwrap(LoginBoxCustomization.sanitizedFooter([
+            "rows": [["variant": "enormous", "segments": [["text": "hi"]]]]
+        ]))
+        let rows = try XCTUnwrap(sanitized["rows"] as? [[String: Any]])
+
+        XCTAssertEqual(rows[0]["variant"] as? String, "body")
     }
 
-    func testHttpAndHttpsAreAccepted() {
-        XCTAssertEqual(
-            LoginBoxCustomization.sanitizedSignUpUrl("https://app.example.com/x"),
-            "https://app.example.com/x"
+    // MARK: - External link allowlist
+
+    /// Only `http(s)` links leave for the OS. An app-scheme link is a hand-off
+    /// the custom-scheme branch already owns, and must not be short-circuited
+    /// into "open externally, keep the box mounted".
+    func testExternalUrlsCoverOnlyHttpLinks() {
+        let urls = LoginBoxCustomization.footerExternalUrls([
+            "rows": [["variant": "body", "segments": [
+                ["label": "Privacy", "url": "https://policies.google.com/privacy"],
+                ["label": "Terms", "url": "http://example.com/terms"],
+                ["label": "Sign up", "url": "myapp://sign-up"],
+                ["text": "no link here"]
+            ]]]
+        ])
+
+        XCTAssertEqual(urls, [
+            "https://policies.google.com/privacy",
+            "http://example.com/terms"
+        ])
+    }
+
+    func testExternalUrlsAreEmptyWithoutAFooter() {
+        XCTAssertTrue(LoginBoxCustomization.footerExternalUrls(nil).isEmpty)
+        XCTAssertTrue(LoginBoxCustomization.footerExternalUrls(["rows": []]).isEmpty)
+    }
+
+    /// A rejected URL must not linger in the allowlist, or the delegate would
+    /// hand the OS a value the footer never rendered.
+    func testExternalUrlsExcludeRejectedLinks() {
+        XCTAssertTrue(
+            LoginBoxCustomization.footerExternalUrls(
+                footerPayload(url: "javascript:alert(1)")
+            ).isEmpty
         )
-        // http is allowed for local development against a plain-HTTP host.
-        XCTAssertEqual(
-            LoginBoxCustomization.sanitizedSignUpUrl("http://localhost:3000/x"),
-            "http://localhost:3000/x"
-        )
-        XCTAssertEqual(
-            LoginBoxCustomization.sanitizedSignUpUrl("HTTPS://app.example.com/x"),
-            "HTTPS://app.example.com/x"
-        )
     }
 
-    func testRejectedUrlDoesNotProduceASignUpOnlyScript() {
-        // Nothing else to apply and an unusable URL: no script at all, rather
-        // than one that installs listeners which can never fire.
-        XCTAssertNil(LoginBoxCustomization.script(
-            themeOptions: nil,
-            localizations: nil,
-            signUpUrl: "javascript:alert(1)"
-        ))
-    }
-
-    /// The listener code ships in every script and is gated at runtime on
-    /// `SIGN_UP_URL`, so a copy-only injection carries it but never binds it.
-    func testListenersAreRuntimeGatedOnTheRedirect() throws {
-        let withoutRedirect = try XCTUnwrap(LoginBoxCustomization.script(
-            themeOptions: nil,
-            localizations: ["en": ["loginBox": ["login": ["title": "Sign-in"]]]]
-        ))
-        XCTAssertTrue(withoutRedirect.contains("var SIGN_UP_URL = null;"))
-        XCTAssertTrue(withoutRedirect.contains("if (SIGN_UP_URL) {"))
-
-        let withRedirect = try XCTUnwrap(LoginBoxCustomization.script(
-            themeOptions: nil,
-            localizations: nil,
-            signUpUrl: "https://app.example.com/sign_up"
-        ))
-        XCTAssertTrue(withRedirect.contains("addEventListener('click'"))
-        XCTAssertTrue(withRedirect.contains("addEventListener('keydown'"))
-    }
-
-    func testOverridesAndRedirectCoexist() throws {
+    func testOverridesAndFooterCoexist() throws {
         let script = try XCTUnwrap(LoginBoxCustomization.script(
             themeOptions: ["loginBox": ["palette": ["primary": ["main": "#3F6655"]]]],
-            localizations: ["en": ["loginBox": ["login": ["signUpLink": "Sign up now"]]]],
-            signUpUrl: "https://app.example.com/sign_up"
+            localizations: ["en": ["loginBox": ["login": ["title": "Sign-in"]]]],
+            footer: footerPayload()
         ))
 
         XCTAssertTrue(script.contains("#3F6655"))
-        XCTAssertTrue(script.contains("Sign up now"))
-        XCTAssertTrue(script.contains("https://app.example.com/sign_up"))
+        XCTAssertTrue(script.contains("Sign-in"))
+        XCTAssertTrue(script.contains("https://policies.google.com/privacy"))
     }
 }

@@ -179,22 +179,42 @@ public class FronteggApp {
     /// ``loginBoxThemeOptions``. Embedded mode only.
     public var loginBoxLocalizations: [String: Any]? = nil
 
-    /// Absolute `http(s)` URL the login box's sign-up link should open instead
-    /// of the box's own sign-up route.
+    /// Content appended below the embedded login box's card, on its login
+    /// screen only.
     ///
-    /// For host apps that own their sign-up flow — where signing up means
-    /// choosing an account type, carrying an invite code, or anything else the
-    /// box's form does not model. The box's built-in `signUpUrl` cannot express
-    /// this: it is an internal route matched against `location.pathname`, and
-    /// the box is served from the Frontegg auth origin.
+    /// The React SDK exposes a `boxFooter` render prop for this; a box served
+    /// into a WebView has no equivalent, and the box's own configuration has no
+    /// slot for content below the card. Two things commonly need to live there:
+    /// a sign-up entry point the box's form cannot model (choosing an account
+    /// type, carrying an invite code), and the reCAPTCHA attribution Google's
+    /// terms require whenever the badge is hidden.
     ///
-    /// Set this before calling `login()`. Pair it with
-    /// ``loginBoxLocalizations`` (`loginBox.login.signUpLink` /
-    /// `signUpMessage`), which is what makes the link render at all — and note
-    /// the box only shows it when the environment's public policy has
-    /// `allowSignups` enabled. Non-`http(s)` values are ignored.
-    /// Embedded mode only.
-    public var loginBoxSignUpUrl: String? = nil
+    /// Structured rather than HTML — host strings are always rendered as text,
+    /// never parsed as markup:
+    /// ```swift
+    /// FronteggApp.shared.loginBoxFooter = [
+    ///     "hideCaptchaBadge": true,
+    ///     "rows": [
+    ///         ["variant": "body", "segments": [
+    ///             ["text": "Don't have an account? "],
+    ///             ["label": "Sign up now", "url": "myapp://sign-up"]
+    ///         ]],
+    ///         ["variant": "fine", "segments": [
+    ///             ["text": "Protected by reCAPTCHA — "],
+    ///             ["label": "Privacy Policy", "url": "https://policies.google.com/privacy"]
+    ///         ]]
+    ///     ]
+    /// ]
+    /// ```
+    ///
+    /// `variant` is `"body"` or `"fine"` (small, de-emphasised legal text).
+    /// Link URLs must be absolute `http(s)` or use one of the app's own
+    /// registered `CFBundleURLTypes` schemes; anything else renders as plain
+    /// text. `http(s)` links are handed to the OS rather than loaded in the
+    /// box, which has no navigation chrome — an app-scheme link instead
+    /// dismisses the box and hands off to the app. Set this before calling
+    /// `login()`. Embedded mode only.
+    public var loginBoxFooter: [String: Any]? = nil
 
 
     public var regionData: [RegionConfig] = []

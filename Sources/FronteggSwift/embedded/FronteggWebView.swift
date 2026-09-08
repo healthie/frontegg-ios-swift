@@ -80,21 +80,21 @@ public struct FronteggWebView: UIViewRepresentable {
         if let customizationScript = LoginBoxCustomization.script(
             themeOptions: fronteggApp.loginBoxThemeOptions,
             localizations: fronteggApp.loginBoxLocalizations,
-            signUpUrl: fronteggApp.loginBoxSignUpUrl
+            footer: fronteggApp.loginBoxFooter
         ) {
             logger.debug("Injecting login box customization overrides")
             userContentController.addUserScript(
                 WKUserScript(source: customizationScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
             )
-            if fronteggApp.loginBoxSignUpUrl != nil,
-               LoginBoxCustomization.sanitizedSignUpUrl(fronteggApp.loginBoxSignUpUrl) == nil {
-                // Dropped by the scheme check, so the link would silently fall
-                // through to the box's own sign-up route.
-                logger.error("loginBoxSignUpUrl was set but is not an absolute http(s) URL; the login box will use its own sign-up route")
+            if fronteggApp.loginBoxFooter != nil,
+               LoginBoxCustomization.sanitizedFooter(fronteggApp.loginBoxFooter) == nil {
+                // Rejected wholesale — no usable rows — so the box renders with
+                // no footer at all rather than a partial one.
+                logger.error("loginBoxFooter was set but contains no usable rows; the login box will render without a footer")
             }
         } else if fronteggApp.loginBoxThemeOptions != nil
                     || fronteggApp.loginBoxLocalizations != nil
-                    || fronteggApp.loginBoxSignUpUrl != nil {
+                    || fronteggApp.loginBoxFooter != nil {
             // Set but unusable — almost always a value JSONSerialization cannot encode
             // (UIColor, Date, ...). Without this the box silently renders unbranded.
             logger.error("Login box overrides were set but could not be encoded; check that all values are JSON types (String, NSNumber, Array, Dictionary, NSNull)")

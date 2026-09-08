@@ -1,13 +1,14 @@
 //
 //  LoginBoxCustomization.swift
 //
-//  Lets a host app theme and re-word the embedded login box at runtime.
+//  Lets a host app theme, re-word and append a footer to the embedded login box
+//  at runtime.
 //
 
 import Foundation
 
-/// Builds the document-start script that applies app-supplied `themeV2` and
-/// `localizations` overrides to the embedded login box.
+/// Builds the document-start script that applies app-supplied `themeV2`,
+/// `localizations` and footer overrides to the embedded login box.
 ///
 /// The hosted login box resolves its own appearance by `fetch`ing
 /// `/frontegg/metadata?entityName=adminBox` and reading `rows[0].configuration`.
@@ -20,22 +21,32 @@ import Foundation
 /// This keeps customization on Frontegg's own documented configuration shape,
 /// so it survives login-box upgrades.
 ///
-/// `signUpUrl` is the one exception, and deliberately so. The box's own
-/// `signUpUrl` is an internal route matched against `location.pathname`, and
-/// the box is served from the Frontegg auth origin — so no value in the
-/// configuration shape can send the user to a host application's own sign-up
-/// page. That link is therefore redirected in the DOM instead, keyed on the
-/// box's `data-test-id`. A test id is part of the box's test contract rather
-/// than its generated styling, which is what makes this narrow exception
-/// tolerable where CSS/class-name styling would not be.
+/// The footer is the one exception, and deliberately so. The box's
+/// configuration has no slot for content below the card — the React SDK exposes
+/// a `boxFooter` render prop for exactly this, but that has no equivalent when
+/// the box is served into a WebView. Host apps that must show something there
+/// (a sign-up entry point, or the reCAPTCHA attribution Google's terms require
+/// when the badge is hidden) have nowhere else to put it.
+///
+/// The footer is therefore built in the DOM, but from a *structured* payload —
+/// text and label/URL pairs — rather than host-supplied HTML, and it is
+/// anchored on `[data-test-id="root-element"]`. A test id is part of the box's
+/// test contract rather than its generated styling, which is what makes this
+/// narrow exception tolerable where CSS/class-name styling would not be. No
+/// host string is ever interpreted as markup.
 enum LoginBoxCustomization {
+
+    /// Schemes that can execute script or read local data; never admissible.
+    private static let deniedSchemes: Set<String> = [
+        "javascript", "data", "file", "blob", "about", "vbscript", "intent", "content"
+    ]
 
     /// Returns `nil` when there is nothing to apply, so callers can skip
     /// injecting a script entirely.
     static func script(
         themeOptions: [String: Any]?,
         localizations: [String: Any]?,
-        signUpUrl: String? = nil
+        footer: [String: Any]? = nil
     ) -> String? {
         var overrides: [String: Any] = [:]
 
@@ -46,51 +57,148 @@ enum LoginBoxCustomization {
             overrides["localizations"] = localizations
         }
 
-        let redirectUrl = sanitizedSignUpUrl(signUpUrl)
+        let sanitizedFooter = sanitizedFooter(footer)
 
         // Either concern alone is worth injecting for, so this is not gated on
         // `overrides` being non-empty.
-        guard !overrides.isEmpty || redirectUrl != nil else {
+        guard !overrides.isEmpty || sanitizedFooter != nil else {
             return nil
         }
 
         let overridesJson = overrides.isEmpty ? "{}" : encodeOverrides(overrides)
         guard let overridesJson else { return nil }
 
+        let footerJson: String
+        if let sanitizedFooter {
+            guard let encoded = encodeOverrides(sanitizedFooter) else { return nil }
+            footerJson = encoded
+        } else {
+            footerJson = "null"
+        }
+
         return template
             .replacingOccurrences(of: "__FRONTEGG_OVERRIDES__", with: overridesJson)
-            .replacingOccurrences(
-                of: "__FRONTEGG_SIGN_UP_URL__",
-                with: redirectUrl.flatMap(encodeJsonString) ?? "null"
-            )
+            .replacingOccurrences(of: "__FRONTEGG_FOOTER__", with: footerJson)
+    }
+
+    /// Normalizes a host-supplied footer payload, dropping anything unsafe.
+    ///
+    /// Shape:
+    /// ```
+    /// [
+    ///   "hideCaptchaBadge": true,
+    ///   "rows": [
+    ///     ["variant": "body",            // "body" | "fine"
+    ///      "segments": [
+    ///        ["text": "Don't have an account? "],
+    ///        ["label": "Sign up now", "url": "myapp://sign-up"]
+    ///      ]]
+    ///   ]
+    /// ]
+    /// ```
+    ///
+    /// A segment whose URL fails the scheme check degrades to plain text rather
+    /// than being dropped: the footer's usual job is a legal attribution, and a
+    /// sentence missing a fragment reads as a bug, whereas an unlinked label
+    /// still says what it needs to say.
+    static func sanitizedFooter(_ footer: [String: Any]?) -> [String: Any]? {
+        guard let footer,
+              let rows = footer["rows"] as? [[String: Any]],
+              !rows.isEmpty else {
+            return nil
+        }
+
+        var sanitizedRows: [[String: Any]] = []
+
+        for row in rows {
+            guard let segments = row["segments"] as? [[String: Any]] else { continue }
+
+            var sanitizedSegments: [[String: Any]] = []
+            for segment in segments {
+                if let text = segment["text"] as? String, !text.isEmpty {
+                    sanitizedSegments.append(["text": text])
+                    continue
+                }
+                guard let label = segment["label"] as? String, !label.isEmpty else { continue }
+
+                if let url = segment["url"] as? String, let safe = sanitizedLinkUrl(url) {
+                    sanitizedSegments.append(["label": label, "url": safe])
+                } else {
+                    sanitizedSegments.append(["text": label])
+                }
+            }
+
+            guard !sanitizedSegments.isEmpty else { continue }
+
+            let variant = (row["variant"] as? String) == "fine" ? "fine" : "body"
+            sanitizedRows.append(["variant": variant, "segments": sanitizedSegments])
+        }
+
+        guard !sanitizedRows.isEmpty else { return nil }
+
+        return [
+            "hideCaptchaBadge": (footer["hideCaptchaBadge"] as? Bool) ?? false,
+            "rows": sanitizedRows
+        ]
     }
 
     /// Accepts an absolute `http(s)` URL, or a URL on one of the host app's own
     /// registered `CFBundleURLTypes` schemes.
     ///
-    /// The value reaches `location.assign`, so anything else — `javascript:`
-    /// above all — is dropped rather than injected. A host app is trusted, but
-    /// this value can originate in remote configuration on its side, and the
-    /// cost of the check is nothing.
+    /// The value becomes an `href`, so anything else — `javascript:` above all —
+    /// is dropped rather than injected. A host app is trusted, but this value
+    /// can originate in remote configuration on its side, and the cost of the
+    /// check is nothing.
     ///
     /// The app-scheme case is what makes a hand-off possible: a host that wants
     /// its sign-up flow presented in its own browser/session rather than inside
-    /// this WebView points `loginBoxSignUpUrl` at its own scheme, and the
-    /// navigation delegate's existing custom-scheme branch opens it and
-    /// dismisses the login box.
-    static func sanitizedSignUpUrl(_ signUpUrl: String?) -> String? {
-        guard let signUpUrl, !signUpUrl.isEmpty,
-              let components = URLComponents(string: signUpUrl),
+    /// this WebView points a footer link at its own scheme, and the navigation
+    /// delegate's existing custom-scheme branch opens it and dismisses the box.
+    static func sanitizedLinkUrl(_ url: String?) -> String? {
+        guard let url, !url.isEmpty,
+              let components = URLComponents(string: url),
               let scheme = components.scheme?.lowercased() else {
             return nil
         }
 
         if scheme == "http" || scheme == "https" {
             guard let host = components.host, !host.isEmpty else { return nil }
-            return signUpUrl
+            return url
         }
 
-        return appUrlSchemes().contains(scheme) ? signUpUrl : nil
+        // Denied ahead of the app-scheme check so the guard that actually
+        // matters cannot be reached through a bundle that registers, say,
+        // `data` as one of its own schemes.
+        if deniedSchemes.contains(scheme) { return nil }
+
+        return appUrlSchemes().contains(scheme) ? url : nil
+    }
+
+    /// The `http(s)` footer URLs, which must be opened outside the login box.
+    ///
+    /// The box's WebView has no navigation chrome, so letting an attribution
+    /// link load in place strands the user with no way back. The navigation
+    /// delegate consults this exact-match set and hands those URLs to the OS
+    /// instead — an allowlist rather than a general "off-origin" rule, because
+    /// the box legitimately navigates to social identity providers.
+    static func footerExternalUrls(_ footer: [String: Any]?) -> Set<String> {
+        guard let sanitized = sanitizedFooter(footer),
+              let rows = sanitized["rows"] as? [[String: Any]] else {
+            return []
+        }
+
+        var urls: Set<String> = []
+        for row in rows {
+            guard let segments = row["segments"] as? [[String: Any]] else { continue }
+            for segment in segments {
+                guard let url = segment["url"] as? String,
+                      let scheme = URLComponents(string: url)?.scheme?.lowercased() else { continue }
+                if scheme == "http" || scheme == "https" {
+                    urls.insert(url)
+                }
+            }
+        }
+        return urls
     }
 
     /// The host app's registered URL schemes, lowercased.
@@ -136,6 +244,11 @@ enum LoginBoxCustomization {
         // U+2028 and U+2029 are valid inside JSON but terminate a line in
         // JavaScript source, which would break the script we embed them in.
         return json
+            // JSONSerialization writes `/` as `\/`. Harmless — JSON and
+            // JavaScript both read `\/` as `/` — but it turns every URL in the
+            // payload (footer links, logo URLs) into `https:\/\/…`, which makes
+            // a script dump hard to read and hard to assert on.
+            .replacingOccurrences(of: "\\/", with: "/")
             .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
             .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
@@ -151,52 +264,15 @@ enum LoginBoxCustomization {
       window.__fronteggLoginBoxOverridesInstalled = true;
 
       var overrides = __FRONTEGG_OVERRIDES__;
-      var SIGN_UP_URL = __FRONTEGG_SIGN_UP_URL__;
+      var FOOTER = __FRONTEGG_FOOTER__;
       var METADATA_PATH = '/frontegg/metadata?entityName=adminBox';
-      var SIGN_UP_SELECTOR = '[data-test-id="redirect-to-signup"]';
-
-      // The box renders its sign-up link as
-      // `<… data-test-id="redirect-to-signup" onClick=goToSignup>`, inside a
-      // `[data-test-id="sign-up-message"]` container. Both ids are part of the
-      // box's test contract, unlike its generated class names.
-      //
-      // The listener sits on `document` in the capture phase because the box
-      // lives in an open shadow root: `click` and `keydown` are composed, so
-      // they propagate across the boundary, and `composedPath()` still exposes
-      // the real target. Capture also means we run before the box's own
-      // handler, which is what lets us stop its internal navigation.
-      function isSignUpTrigger(event) {
-        if (!SIGN_UP_URL) { return false; }
-        var path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-        for (var i = 0; i < path.length; i++) {
-          var node = path[i];
-          if (!node || node.nodeType !== 1) { continue; }
-          if (typeof node.matches === 'function' && node.matches(SIGN_UP_SELECTOR)) { return true; }
-          if (typeof node.closest === 'function' && node.closest(SIGN_UP_SELECTOR)) { return true; }
-        }
-        return false;
-      }
-
-      function redirectToSignUp(event) {
-        if (!isSignUpTrigger(event)) { return; }
-        event.preventDefault();
-        event.stopPropagation();
-        if (typeof event.stopImmediatePropagation === 'function') {
-          event.stopImmediatePropagation();
-        }
-        window.location.assign(SIGN_UP_URL);
-      }
-
-      if (SIGN_UP_URL) {
-        document.addEventListener('click', redirectToSignUp, true);
-        // The link is a focusable non-button with its own onKeyDown, so keyboard
-        // and switch-control users reach it this way rather than by click.
-        document.addEventListener('keydown', function (event) {
-          if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
-            redirectToSignUp(event);
-          }
-        }, true);
-      }
+      var FOOTER_ID = 'frontegg-login-box-footer';
+      var ROOT_SELECTOR = '[data-test-id="root-element"]';
+      // The footer follows the login screen only, mirroring the React SDK where
+      // `boxFooter` is configured under `login` and the other screens
+      // (forgot-password, MFA, signup) carry their own. Keyed on the login
+      // title's test id, which is present on that screen and no other.
+      var LOGIN_MARKER = '[data-test-id="login-page-title"]';
 
       function isPlainObject(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -249,6 +325,143 @@ enum LoginBoxCustomization {
           });
         });
       };
+
+      if (!FOOTER) { return; }
+
+      // ---- footer ----------------------------------------------------------
+      // Google's badge is rendered into the light DOM at body level, so a
+      // document-level stylesheet reaches it even though the box itself lives
+      // in a shadow root. Hiding it is only permitted alongside the visible
+      // attribution the host supplies in `rows`.
+      function hideCaptchaBadge() {
+        if (!FOOTER.hideCaptchaBadge) { return; }
+        if (document.getElementById(FOOTER_ID + '-badge-style')) { return; }
+        var head = document.head || document.documentElement;
+        if (!head) { return; }
+        var style = document.createElement('style');
+        style.id = FOOTER_ID + '-badge-style';
+        style.textContent = '.grecaptcha-badge{visibility:hidden!important;}';
+        head.appendChild(style);
+      }
+
+      function boxShadowRoot() {
+        var found = null;
+        var all = document.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+          var host = all[i];
+          if (host.shadowRoot && host.shadowRoot.querySelector(ROOT_SELECTOR)) {
+            found = host.shadowRoot;
+            break;
+          }
+        }
+        return found;
+      }
+
+      // The box nests several full-height centring wrappers inside
+      // [root-element] before the card. Descend while a wrapper has exactly one
+      // child that still fills it; the first child that does NOT fill its
+      // parent is the card, so we stop on the card's parent and append there.
+      // The footer then flows directly under the card, and that column's
+      // justify-content:center re-centres the pair.
+      //
+      // Deliberately geometric rather than structural: it reads the layout the
+      // box actually produced instead of hard-coding a depth, so an added or
+      // removed wrapper does not silently move the footer inside the card.
+      function insertionPoint(shadowRoot) {
+        var node = shadowRoot.querySelector(ROOT_SELECTOR);
+        if (!node) { return null; }
+        var guard = 0;
+        while (node.childElementCount === 1 && guard++ < 10) {
+          var child = node.firstElementChild;
+          var parentHeight = node.getBoundingClientRect().height;
+          var childHeight = child.getBoundingClientRect().height;
+          if (!(parentHeight > 0 && childHeight >= 0.9 * parentHeight)) { break; }
+          node = child;
+        }
+        return node;
+      }
+
+      function buildRow(row) {
+        var line = document.createElement('div');
+        var fine = row.variant === 'fine';
+        line.style.cssText = [
+          'text-align:center',
+          'margin-top:' + (fine ? '24px' : '16px'),
+          'font-size:' + (fine ? '9px' : '14px'),
+          'line-height:1.3',
+          'color:' + (fine ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.87)'),
+          'font-family:inherit'
+        ].join(';');
+
+        (row.segments || []).forEach(function (segment) {
+          if (segment.url) {
+            var anchor = document.createElement('a');
+            // textContent, never innerHTML: host copy is never markup.
+            anchor.textContent = segment.label;
+            anchor.setAttribute('href', segment.url);
+            anchor.style.cssText =
+              'font-size:inherit;line-height:inherit;color:#2e74c7;text-decoration:none';
+            line.appendChild(anchor);
+          } else if (segment.text) {
+            line.appendChild(document.createTextNode(segment.text));
+          }
+        });
+
+        return line;
+      }
+
+      function renderFooter() {
+        var shadowRoot = boxShadowRoot();
+        if (!shadowRoot) { return; }
+
+        var existing = shadowRoot.querySelector('#' + FOOTER_ID);
+        var onLoginScreen = !!shadowRoot.querySelector(LOGIN_MARKER);
+
+        if (!onLoginScreen) {
+          if (existing) { existing.remove(); }
+          return;
+        }
+        // Still mounted where we put it: nothing to do. React re-rendering the
+        // card can detach it, which is what the observer below is for.
+        if (existing && existing.isConnected) { return; }
+
+        var target = insertionPoint(shadowRoot);
+        if (!target) { return; }
+
+        var wrapper = document.createElement('div');
+        wrapper.id = FOOTER_ID;
+        wrapper.style.cssText = 'width:100%;display:block;flex:0 0 auto';
+        (FOOTER.rows || []).forEach(function (row) {
+          wrapper.appendChild(buildRow(row));
+        });
+        target.appendChild(wrapper);
+
+        hideCaptchaBadge();
+      }
+
+      // This script runs at document start, so the box does not exist yet, and
+      // its screen changes happen inside a shadow root — which a
+      // MutationObserver on `document` does not see. So: poll until the shadow
+      // root appears, then observe it directly, keeping a slow poll as a
+      // backstop in case the box is re-created wholesale.
+      var observed = null;
+      function attach() {
+        renderFooter();
+        var shadowRoot = boxShadowRoot();
+        if (!shadowRoot || observed === shadowRoot) { return; }
+        if (typeof MutationObserver !== 'function') { return; }
+        observed = shadowRoot;
+        new MutationObserver(function () {
+          renderFooter();
+        }).observe(shadowRoot, { childList: true, subtree: true });
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', attach);
+      } else {
+        attach();
+      }
+      setInterval(attach, 500);
     })();
     """
 }
