@@ -77,24 +77,19 @@ public struct FronteggWebView: UIViewRepresentable {
         // Apply host-supplied theme/copy overrides to the login box. Scoped to the
         // main frame so third-party frames (captcha, social providers) keep the
         // untouched `fetch`. No-op unless the app set one of the properties.
-        if let customizationScript = LoginBoxCustomization.script(
-            themeOptions: fronteggApp.loginBoxThemeOptions,
-            localizations: fronteggApp.loginBoxLocalizations,
-            footer: fronteggApp.loginBoxFooter
-        ) {
+        let loginBoxOverrides = fronteggApp.loginBoxOverrides
+        if let customizationScript = LoginBoxCustomization.script(loginBoxOverrides) {
             logger.debug("Injecting login box customization overrides")
             userContentController.addUserScript(
                 WKUserScript(source: customizationScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
             )
-            if fronteggApp.loginBoxFooter != nil,
-               LoginBoxCustomization.sanitizedFooter(fronteggApp.loginBoxFooter) == nil {
+            if loginBoxOverrides.footer != nil,
+               LoginBoxCustomization.sanitizedFooter(loginBoxOverrides.footer) == nil {
                 // Rejected wholesale — no usable rows — so the box renders with
                 // no footer at all rather than a partial one.
                 logger.error("loginBoxFooter was set but contains no usable rows; the login box will render without a footer")
             }
-        } else if fronteggApp.loginBoxThemeOptions != nil
-                    || fronteggApp.loginBoxLocalizations != nil
-                    || fronteggApp.loginBoxFooter != nil {
+        } else if !loginBoxOverrides.isEmpty {
             // Set but unusable — almost always a value JSONSerialization cannot encode
             // (UIColor, Date, ...). Without this the box silently renders unbranded.
             logger.error("Login box overrides were set but could not be encoded; check that all values are JSON types (String, NSNumber, Array, Dictionary, NSNull)")

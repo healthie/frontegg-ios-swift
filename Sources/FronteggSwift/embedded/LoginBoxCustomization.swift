@@ -43,6 +43,43 @@ enum LoginBoxCustomization {
 
     /// Returns `nil` when there is nothing to apply, so callers can skip
     /// injecting a script entirely.
+    /// The login-box overrides as one value.
+    ///
+    /// The individual properties on ``FronteggApp`` remain the discoverable
+    /// API. This is the single read path they feed, so call sites don't thread
+    /// three arguments and three separate nil checks, and a fourth override
+    /// would not have to touch every one of them — they are applied together
+    /// by one injected script, so a partial application is not a meaningful
+    /// operation anyway.
+    struct Overrides {
+        let themeOptions: [String: Any]?
+        let localizations: [String: Any]?
+        let footer: [String: Any]?
+
+        init(
+            themeOptions: [String: Any]? = nil,
+            localizations: [String: Any]? = nil,
+            footer: [String: Any]? = nil
+        ) {
+            self.themeOptions = themeOptions
+            self.localizations = localizations
+            self.footer = footer
+        }
+
+        /// True when the app set none of them, i.e. there is nothing to inject.
+        var isEmpty: Bool {
+            themeOptions == nil && localizations == nil && footer == nil
+        }
+    }
+
+    static func script(_ overrides: Overrides) -> String? {
+        script(
+            themeOptions: overrides.themeOptions,
+            localizations: overrides.localizations,
+            footer: overrides.footer
+        )
+    }
+
     static func script(
         themeOptions: [String: Any]?,
         localizations: [String: Any]?,

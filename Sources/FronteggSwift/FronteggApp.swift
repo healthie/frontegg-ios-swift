@@ -216,6 +216,18 @@ public class FronteggApp {
     /// `login()`. Embedded mode only.
     public var loginBoxFooter: [String: Any]? = nil
 
+    /// The three login-box overrides above, read as one value.
+    ///
+    /// They are applied together by a single injected script, so consumers
+    /// want them together; the properties stay separate because that is the
+    /// discoverable API for setting them.
+    var loginBoxOverrides: LoginBoxCustomization.Overrides {
+        LoginBoxCustomization.Overrides(
+            themeOptions: loginBoxThemeOptions,
+            localizations: loginBoxLocalizations,
+            footer: loginBoxFooter
+        )
+    }
 
     public var regionData: [RegionConfig] = []
     let credentialManager: CredentialManager
