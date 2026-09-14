@@ -1153,7 +1153,6 @@ class CustomWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
         logger.trace("didFinish")
         if let url = webView.url {
             let urlType = getOverrideUrlType(url: url)
-            NSLog("HLTHPROBE didFinish type=\(urlType) path=\(url.path)")
             logger.info("urlType: \(urlType), for: \(url.absoluteString)")
             
             // Update previousUrl for tracking unlock account flow
@@ -1222,10 +1221,6 @@ class CustomWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     // usually internal routes are redirects
                     // this 500ms will prevent loader blinking
-                    let nowPath = webView.url?.path ?? "nil"
-                    webView.evaluateJavaScript("(document.body ? document.body.innerText.trim().length : -1)") { r, _ in
-                        NSLog("HLTHPROBE timerFire path=\(nowPath) textLen=\(String(describing: r)) authed=\(self.fronteggAuth.isAuthenticated)")
-                    }
                     self.fronteggAuth.setWebLoading(false)
                     Task { @MainActor [weak self] in
                         self?.fronteggAuth.flushPendingOAuthErrorPresentationIfNeeded(delayIfNeeded: true)
