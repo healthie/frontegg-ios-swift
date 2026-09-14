@@ -25,7 +25,7 @@ public struct EmbeddedLoginModal: View {
     public var body: some View {
         ZStack {
             if(fronteggAuth.initializing || fronteggAuth.showLoader) {
-                DefaultLoader()
+                DefaultLoader().onAppear { NSLog("HLTHPROBE modalBranch=loader") }
             } else if !fronteggAuth.initializing
                 && !fronteggAuth.showLoader
                 && fronteggAuth.isAuthenticated
@@ -40,11 +40,12 @@ public struct EmbeddedLoginModal: View {
                 // back. Every other dismissal in the auth flow is already
                 // unanimated for the same reason.
                 DefaultLoader().onAppear() {
+                    NSLog("HLTHPROBE modalBranch=dismiss")
                     VCHolder.shared.vc?.presentedViewController?.dismiss(animated: false)
                     VCHolder.shared.vc = nil
                 }
             } else {
-                EmbeddedLoginPage()
+                EmbeddedLoginPage().onAppear { NSLog("HLTHPROBE modalBranch=page") }
             }
             
         }.onAppear {
