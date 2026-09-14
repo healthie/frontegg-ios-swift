@@ -1221,7 +1221,29 @@ class CustomWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     // usually internal routes are redirects
                     // this 500ms will prevent loader blinking
-                    self.fronteggAuth.setWebLoading(false)
+                    //
+                    // Internal routes are every path on the auth host that is
+                    // not under URLConstants.loginRoutes, so by definition they
+                    // render nothing a user is meant to see. Hiding the loader
+                    // on one can only ever uncover a blank page, and the
+                    // 500ms is no guarantee the flow has moved on: when the
+                    // token exchange that follows a redirect is slow, this
+                    // fires while it is still in flight and the blank document
+                    // shows for the rest of it. Measured on a simulator
+                    // against a slow staging response: 4.5s of blank white
+                    // between two loaders.
+                    //
+                    // So only hand the screen back once there is something to
+                    // hand it back to: authenticated (the modal dismisses
+                    // itself), or navigated off the internal route. The error
+                    // paths below clear this flag directly and are unaffected,
+                    // as is a loaded error page.
+                    let stillOnInternalRoute = webView.url.map {
+                        getOverrideUrlType(url: $0) == .internalRoutes
+                    } ?? false
+                    if self.fronteggAuth.isAuthenticated || !stillOnInternalRoute {
+                        self.fronteggAuth.setWebLoading(false)
+                    }
                     Task { @MainActor [weak self] in
                         self?.fronteggAuth.flushPendingOAuthErrorPresentationIfNeeded(delayIfNeeded: true)
                     }
