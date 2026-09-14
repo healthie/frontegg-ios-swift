@@ -56,14 +56,14 @@ public class FronteggState: ObservableObject {
     public func setAccessToken(_ v: String?) { setIfChanged(\.accessToken, v) }
     public func setRefreshToken(_ v: String?) { setIfChanged(\.refreshToken, v) }
     public func setUser(_ v: User?) { setIfChanged(\.user, v) }
-    public func setIsAuthenticated(_ v: Bool) { setIfChanged(\.isAuthenticated, v) }
+    public func setIsAuthenticated(_ v: Bool) { NSLog("HLTHPROBE isAuthenticated=\(v)"); setIfChanged(\.isAuthenticated, v) }
     public func setIsStepUpAuthorization(_ v: Bool) { setIfChanged(\.isStepUpAuthorization, v) }
-    public func setIsLoading(_ v: Bool) { setIfChanged(\.isLoading, v) }
-    public func setWebLoading(_ v: Bool) { setIfChanged(\.webLoading, v) }
-    public func setLoginBoxLoading(_ v: Bool) { setIfChanged(\.loginBoxLoading, v) }
-    public func setInitializing(_ v: Bool) { setIfChanged(\.initializing, v) }
+    public func setIsLoading(_ v: Bool) { NSLog("HLTHPROBE isLoading=\(v)"); setIfChanged(\.isLoading, v) }
+    public func setWebLoading(_ v: Bool) { NSLog("HLTHPROBE webLoading=\(v)"); setIfChanged(\.webLoading, v) }
+    public func setLoginBoxLoading(_ v: Bool) { NSLog("HLTHPROBE loginBoxLoading=\(v)"); setIfChanged(\.loginBoxLoading, v) }
+    public func setInitializing(_ v: Bool) { NSLog("HLTHPROBE initializing=\(v)"); setIfChanged(\.initializing, v) }
     public func setLateInit(_ v: Bool) { setIfChanged(\.lateInit, v) }
-    public func setShowLoader(_ v: Bool) { setIfChanged(\.showLoader, v) }
+    public func setShowLoader(_ v: Bool) { NSLog("HLTHPROBE showLoader=\(v)"); setIfChanged(\.showLoader, v) }
     public func setAppLink(_ v: Bool) { setIfChanged(\.appLink, v) }
     public func setExternalLink(_ v: Bool) { setIfChanged(\.externalLink, v) }
     public func setSelectedRegion(_ v: RegionConfig?) { setIfChanged(\.selectedRegion, v) }
