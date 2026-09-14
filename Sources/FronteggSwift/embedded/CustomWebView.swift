@@ -1130,6 +1130,7 @@ class CustomWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
         logger.trace("didStartProvisionalNavigation")
         if let url = webView.url {
             let urlType = getOverrideUrlType(url: url)
+            NSLog("HLTHPROBE didStart urlType=\(urlType) path=\(url.path)")
             
             logger.info("urlType: \(urlType)")
             
@@ -1153,6 +1154,7 @@ class CustomWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
         logger.trace("didFinish")
         if let url = webView.url {
             let urlType = getOverrideUrlType(url: url)
+            NSLog("HLTHPROBE didFinish urlType=\(urlType) path=\(url.path)")
             logger.info("urlType: \(urlType), for: \(url.absoluteString)")
             
             // Update previousUrl for tracking unlock account flow
